@@ -1,0 +1,719 @@
+{r global_options, include=FALSE} knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/', echo=FALSE, warning=FALSE, message=FALSE)
+
+
+
+---
+title: "dinesafe"
+author: "Doug Creighton"
+date: "February 10, 2016"
+output: html_document
+---
+
+---
+title: "Dine Safe"
+author: "Doug Creighton"
+date: "January 27, 2016"
+output: html_document
+---
+
+#Introduction
+I dedcided to pull some data from the City of Toronto because they have begun to open it up and I wanted to take a look at it. I chose this dataset because it was large and I could see where a good amount of analysis could go. 
+
+The dataset is a two year period starting in Jan and ending two years later in Jan 2016. It is the records of every evaluation that is completed in the city. 
+
+Part of my objective was to see if there were location patterns or categorical patterns to restaurants getting a conditional pass or being closed for a short period of.
+
+Below is what I found.
+
+
+
+#load all librarys
+This where is where I loaded allthe librarys
+```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
+library(ggplot2)
+library(dplyr)
+library(ggmap)
+library(reshape2)
+library(gridExtra)
+library(scales)
+library(maps)
+library(sp)
+library(dbscan)
+require(graphics)
+library(spatstat)
+library(cluster)
+library(maptools)
+
+
+setwd("C:/Users/h.p/Dropbox/data analysis/R/Final Project")
+```
+
+#Load Files and wrangle data
+This section Just has the starting data.
+I made a new dataset in dine_merge. It includes geocoded locations of all the addresses
+```{r echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+#dine <- read.csv('dinesafe.csv')
+#dine$INSPECTION_DATE <- as.Date(dine$INSPECTION_DATE, format = "%Y-%m-%d")
+dine <- readRDS('dine_merge.rds')
+```
+
+#Basic Information about dataset
+Here is just some basic information about the data set. This helped me get a feel for what I could do with it. 
+```{r echo=TRUE, warning=FALSE}
+
+# String of the main data set
+str(dine)
+# Names of variables
+names(dine)
+
+#The interval of when the data started and when it ended
+max(dine$INSPECTION_DATE, na.rm=TRUE)
+min(dine$INSPECTION_DATE, na.rm = TRUE)
+
+# Table of the different types of severity and their counts
+table(dine$SEVERITY)
+
+# Table of the different types of Status and their counts 
+table(dine$ESTABLISHMENT_STATUS)
+
+#The most conistant INfraction Details and the amount of different Infractions
+head(sort(table(dine$INFRACTION_DETAILS), decreasing = TRUE))
+length(unique(dine$INFRACTION_DETAILS))
+
+#Unique Addresses 
+length(dine$ESTABLISHMENT_ADDRESS)
+length(unique(dine$ESTABLISHMENT_ADDRESS))
+
+```
+
+
+#Graphs of how different Establishment types get different infractions
+I firs did a basic proportional graph of how much each Establishment type got how many infractions. However, I felt that this was not weighted well because there are more of some types than of others. I needed to know what the % of each category was. This was a much more difficult task but I manged to pull it together. 
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+
+ID_one_line <- dcast(dine, ESTABLISHMENT_NAME+ ESTABLISHMENT_ADDRESS + 
+             ESTABLISHMENTTYPE +
+             INSPECTION_DATE + 
+             INSPECTION_ID ~ ESTABLISHMENT_STATUS)
+got_closed <- subset(ID_one_line, ID_one_line$Closed >= 1)
+got_cp <- subset(ID_one_line, ID_one_line$`Conditional Pass` >= 1)
+got_pass <- subset(ID_one_line, ID_one_line$Pass >= 1)
+
+ggplot(aes(x=reorder(ESTABLISHMENTTYPE,ESTABLISHMENTTYPE,
+       function(x)-length(x))),data= got_closed) +
+       geom_bar(aes(y = (..count..)/sum(..count..))) +
+       theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +   
+       xlab("Establishment Type") +
+       ylab("%") +
+       ggtitle("Etablishment Type that got closed")
+
+ggplot(aes(x=reorder(ESTABLISHMENTTYPE,ESTABLISHMENTTYPE,
+       function(x)-length(x))),data= got_cp) +
+       geom_bar(aes(y = (..count..)/sum(..count..))) +
+       theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +   
+       xlab("Establishment Type") +
+       ylab("%") +
+       ggtitle("Etablishment Type that got a Conditional Pass")
+
+ggplot(aes(x=reorder(ESTABLISHMENTTYPE,ESTABLISHMENTTYPE,
+       function(x)-length(x))),data= got_pass) +
+       geom_bar(aes(y = (..count..)/sum(..count..))) +
+       theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +   
+       xlab("Establishment Type") +
+       ylab("%") +
+       ggtitle("Etablishment Type that got a Pass")
+
+# Now Proportional of the same three grpahs. 
+
+total <- summarise(group_by(ID_one_line, ESTABLISHMENTTYPE),
+          total= n())
+closed <- summarise(group_by(got_closed, ESTABLISHMENTTYPE),
+          amount_closed= n())
+cp<- summarise(group_by(got_cp, ESTABLISHMENTTYPE),
+          amount_cp= n())
+pass <- summarise(group_by(got_pass, ESTABLISHMENTTYPE),
+          amount_pass= n())
+
+full_table <- full_join(full_join(full_join(total,closed,
+                        by="ESTABLISHMENTTYPE"),cp, 
+                        by="ESTABLISHMENTTYPE"), pass, 
+                        by= "ESTABLISHMENTTYPE")
+
+
+full_table <- full_table %>%
+  mutate(Closed_p =  amount_closed/total*100) %>%
+  mutate(cp_p =  amount_cp/total*100) %>%
+  mutate(pass_p =  amount_pass/total*100)
+
+ggplot(aes(x=reorder(ESTABLISHMENTTYPE,-Closed_p), y=Closed_p),
+       data= subset(full_table, full_table$Closed_p > 0)) +
+       geom_bar(stat="identity") +
+       theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +   
+       xlab("Establishment Type") +
+       ylab("% of category") +
+       ggtitle("Etablishment Type that got closed")
+
+ggplot(aes(x=reorder(ESTABLISHMENTTYPE,-cp_p), y=cp_p),
+       data= subset(full_table, full_table$cp_p > 0)) +
+       geom_bar(stat="identity") +
+       theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +   
+       xlab("Establishment Type") +
+       ylab("% of category") +
+       ggtitle("Etablishment Type that got conditional pass ")
+
+ggplot(aes(x=reorder(ESTABLISHMENTTYPE,-pass_p), y=pass_p),
+       data= subset(full_table, full_table$pass_p > 0)) +
+       geom_bar(stat="identity") +
+       theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +   
+       xlab("Establishment Type") +
+       ylab("% of category") +
+       ggtitle("Etablishment Type that passed all incpections ")
+
+
+```
+The results of the graphs show that it is not restaurants that were the worst culperits it was chartered Cruise Boats, Rest Homes and mobile food preperation premises. 
+
+
+
+
+
+# Graphs for the distribution of fines.
+Below is the distribution of fines. I zoomed in on a few graphs to have a closer look. 
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ 
+fines <- subset(dine, dine$AMOUNT_FINED>0)
+ggplot(aes(x=AMOUNT_FINED), data= fines) +geom_histogram( binwidth = 50) +
+  geom_vline(aes(color = "red",
+                 xintercept= mean(fines$AMOUNT_FINED)), show.legend = TRUE) +
+  geom_vline(aes(color = "blue", 
+                 xintercept= median(fines$AMOUNT_FINED)), show.legend = TRUE) +
+  scale_color_manual("CT\n",
+                 labels = c("Mean","Median"), values = c("red", "blue"))
+ 
+?geom_abline
+fines <- subset(dine, dine$AMOUNT_FINED>0)
+
+ggplot(aes(x=AMOUNT_FINED), data= fines) +
+  geom_histogram(binwidth = 10) +
+  xlim(0,400) +
+  ggtitle("Fines below 400") +
+  geom_vline(aes(color = "red",
+                 xintercept= mean(fines$AMOUNT_FINED)), show.legend = TRUE) +
+  geom_vline(aes(color = "blue", 
+                 xintercept= median(fines$AMOUNT_FINED)), show.legend = TRUE) +
+  scale_color_manual("CT\n",
+                 labels = c("Mean","Median"), values = c("red", "blue"))
+
+fines_1 <- subset(fines,fines$AMOUNT_FINED > 0 & 
+                      fines$AMOUNT_FINED < 400)
+head((arrange((count(fines_1, INFRACTION_DETAILS)),-n)),10)
+
+
+ggplot(aes(x=AMOUNT_FINED), data= fines) +
+  geom_histogram(binwidth = 10)   +
+  xlim(400,1000)+
+  ggtitle("Fines Between 400 and 1000")
+
+fines_400 <- subset(fines,fines$AMOUNT_FINED >= 400 & 
+                      fines$AMOUNT_FINED < 1000)
+head((arrange((count(fines_400, INFRACTION_DETAILS)),-n)),10)
+
+ggplot(aes(x=AMOUNT_FINED), data= fines) +
+  geom_histogram(binwidth = 50)   +
+  xlim(1000,4000) +
+  ggtitle("Fines Over 1000 dollars")
+
+fines_1000 <- subset(fines,fines$AMOUNT_FINED >= 1000)
+head((arrange((count(fines_1000, INFRACTION_DETAILS)),-n)),10)
+
+```
+There is not much that we can take away from these graphs except that fines are generally very low. with a few sporatically scattered above 1000. The reasoning for the fines are similar for all groups so the increase in fines might be how often the restaurant gets in trouble. It is possible that the more often they get the same violation the higher the fine goes up. Or possibly the combination of violations.
+
+
+#Geocoding - This is the code I used to make the Graphs
+This section I had to completely hastag to get the knit HTML to work. 
+
+What I did here was create a loop that would ping google for the lat long for each address in the dataset. I could only do 2500 per a day for free. So it took a week or two to get through the entire dataset. It only took a week or two because even though there is greater than 90,000 entries there were only just over 11,000 unique entries. 
+```{r, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE, inlcude=FALSE}
+
+#getGeoDetails <- function(address){   
+#   
+#   #use the gecode function to query google servers
+#   geo_reply = geocode(paste0(address, ", Toronto Canada"), output='all', 
+#                       messaging=TRUE, override_limit=TRUE)
+#   
+#   #building an data frame to input data
+#   answer <- data.frame(lat=NA, long=NA, accuracy=NA, input_address = NA,
+#                        formatted_address=NA, address_type=NA, status=NA)
+#   answer$status <- geo_reply$status
+#   
+#   if (geo_reply$status == "OVER_QUERY_LIMIT"){
+#      answer$status <- "blocked"
+#      return(answer)
+#   }
+#   
+#   #return Na's if we didn't get a match:
+#   if (geo_reply$status != "OK"){
+#       return(answer)
+#   } 
+#   
+#   #Extact information from google and put it into dataframe
+#   #else, extract what we need from the Google server reply into a dataframe:
+#   answer$lat <- geo_reply$results[[1]]$geometry$location$lat
+#   answer$long <- geo_reply$results[[1]]$geometry$location$lng   
+#   
+#   if (length(geo_reply$results[[1]]$types) > 0){
+#       answer$accuracy <- geo_reply$results[[1]]$types[[1]]
+#   }
+#   
+#   answer$address_type <- paste(geo_reply$results[[1]]$types, collapse=',')
+#   answer$formatted_address <- geo_reply$results[[1]]$formatted_address
+#   answer$input_address <- address
+#   
+#   #return one line of the dataframe 
+#   return(answer)
+#}
+#
+##Ammend data with Toronto, 
+#addresses <- (unique(dine$ESTABLISHMENT_ADDRESS))
+#
+##initialise a dataframe to hold the results
+###geocoded <- data.frame()
+#
+## start the counter (commented after use )
+###startindex <- 1
+###tempfilename <- paste0(infile, '_temp_geocoded.rds')
+#
+##second Counter 
+###my.temp <- readRDS("temp_geocoded.rds")
+###startindex <- 2457
+#
+##Third Counter
+###geocoded <- readRDS("temp_geocoded2.rds")
+###startindex <- 4956
+#
+##fifth Counter
+###geocoded <- readRDS("temp_geocoded3.rds")
+###startindex <- 6703
+#
+##sixtth counter
+###geocoded <- readRDS("tempfilename4_2.rds")
+###geocoded <- subset(geocoded, geocoded$status != "blocked")
+###startindex <- 9246
+###dim(unique(geocoded))[1]
+###dim(geocoded)[1]
+###View(addresses)
+#
+##Last Counter
+### They were some erros and had to find areas where we missed an address
+###temp <- subset(dine, !(ESTABLISHMENT_ADDRESS %in% geocoded$input_address))
+###addresses <- unique(temp$ESTABLISHMENT_ADDRESS)
+###startindex <- 1
+#
+#for (ii in seq(startindex, length(addresses))){
+#   
+#   print(paste("Working on index", ii, "of", length(addresses)))
+#   
+#   #query the google geocoder - this will pause here if we are over the limit.
+#   result = getGeoDetails(addresses[ii]) 
+#   print(result$status)     
+#   result$index <- ii
+#   
+#   #append the answer to the results file.
+##   geocoded <- rbind(geocoded, result)
+#   
+#   #save temporary results as we are going along
+#   saveRDS(geocoded, 'temp_geocoded6.rds')
+#} 
+#
+##Establish final data
+###unique_geocoded <- subset(geocoded, !duplicated(geocoded$input_address))
+##saveRDS(unique_geocoded, 'geocoded_final.rds')
+```
+
+
+# See if there is a relation between month and status
+In this section I wanted to know if there were months where more restaurants might have failed health expection. My intial thought was that during the busy times there might be more violations: Summer and Christmas
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+# add a month column to database
+dine$INSPECTION_MONTH <- strftime(dine$INSPECTION_DATE, "%m")
+
+severity <- dcast(dine, ESTABLISHMENT_NAME+ ESTABLISHMENT_ADDRESS + 
+             INSPECTION_ID +ESTABLISHMENTTYPE +
+             ESTABLISHMENT_STATUS + INSPECTION_MONTH + 
+             INSPECTION_DATE ~ SEVERITY)
+
+#temp <- group_by(ESTABLISHMENT_ID, ESTABLISHMENT_STATUS)
+
+
+
+status_date2 <- group_by(severity, INSPECTION_MONTH)
+month_status2 <- summarise(status_date2, 
+                           Closed = sum(ESTABLISHMENT_STATUS == 'Closed'),
+                           Conditional.Pass = 
+                           sum(ESTABLISHMENT_STATUS == 'Conditional Pass'), 
+                           Pass = sum(ESTABLISHMENT_STATUS == 'Pass'))
+
+month_status_pro2 <- month_status2
+month_status_pro2$Closed_pro <- with(month_status_pro2,
+        Closed/(Closed+Conditional.Pass+Pass)*100)
+month_status_pro2$Cond.pass_pro <- with(month_status_pro2,                               Conditional.Pass/(Closed+Conditional.Pass+Pass)*100)
+month_status_pro2$Pass_pro <- with(month_status_pro2,
+        Pass/(Closed+Conditional.Pass+Pass)*100)
+
+
+p1<-ggplot(data = subset(month_status_pro2, 
+           month_status_pro2$INSPECTION_MONTH <= 12),
+           aes(x=INSPECTION_MONTH, y=Closed_pro)) +
+          geom_bar(stat="identity") +
+          ylab("Closed %")
+p2<-ggplot(data = subset(month_status_pro2, 
+          month_status_pro2$INSPECTION_MONTH <= 12),
+          aes(x=INSPECTION_MONTH, y=Cond.pass_pro)) + 
+          geom_bar(stat="identity") +
+          ylab("Conditional Pass %")
+p3<-ggplot(data = subset(month_status_pro2, 
+          month_status_pro2$INSPECTION_MONTH <= 12),
+          aes(x=INSPECTION_MONTH, y=Pass_pro)) + 
+          geom_bar(stat="identity") +
+          ylab("Passed %")
+grid.arrange(p1,p2,p3, 
+          top = "What Months do Restaurants get each type of condition")
+
+#Average amount of total violations for restaurants that given a Passed
+dim(subset(dine, 
+           dine$ESTABLISHMENT_STATUS == "Pass"))[1] / 
+            length(unique(subset(dine, 
+                                 dine$ESTABLISHMENT_STATUS ==
+                                   "Pass")$INSPECTION_ID))
+
+ggplot(data= subset(dine, dine$ESTABLISHMENT_STATUS == "Pass"),
+  aes(x=SEVERITY))+
+  geom_bar(aes(y = (..count..)/sum(..count..))) +
+  scale_y_continuous(labels=percent_format()) +
+  ggtitle("Distribution of violations for Restaurants to be given a Pass") +
+  ylab("% of total violations")
+
+#Average amount of total violations for restaurants that are given a closed
+dim(subset(dine, 
+           dine$ESTABLISHMENT_STATUS == "Closed"))[1] /
+          length(unique(subset(dine, 
+                               dine$ESTABLISHMENT_STATUS ==
+                                 "Closed")$INSPECTION_ID))
+
+ggplot(data= subset(dine, dine$ESTABLISHMENT_STATUS == "Closed"),
+  aes(x=SEVERITY))+
+  geom_bar(aes(y = (..count..)/sum(..count..))) +
+  scale_y_continuous(labels=percent_format()) +
+  ggtitle("Distribution of violations for Restaurants to be given a closed") +
+  ylab("% of total violations")
+  
+
+#Average amount of total violations for restaurants that are given a Conditional Pass
+dim(subset(dine, 
+           dine$ESTABLISHMENT_STATUS == "Conditional Pass"))[1] / 
+           length(unique(subset(dine, 
+                                dine$ESTABLISHMENT_STATUS == 
+                                  "Conditional Pass")$INSPECTION_ID))
+
+#distribution plot
+ggplot(data= subset(dine, dine$ESTABLISHMENT_STATUS == "Conditional Pass"),
+  aes(x=SEVERITY))+
+  geom_bar(aes(y = (..count..)/sum(..count..))) +
+  scale_y_continuous(labels=percent_format()) +
+  ggtitle("Distribution of violations for Restaurants 
+          to be given a conditional Pass") + 
+  ylab("% of total violations")
+
+```
+In conclusion the data showed a little bit that there were humps of closures in peak demand periods of summer and christmas but only for closures and although it appeared to be higher the number are so low it might not even be significant. Otherwise, the month did not really have an affect on if the restaurant passed or not. 
+
+
+#Restaruants that were closed down in the last two years
+List of names of restaurants that were closed in the last two years. I did some additional reading and inspectors said they want to keep businesses open. However, repeat severe offences make them have to close it as previous violations did not change behaviour.
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+closed <- subset(dine, dine$ESTABLISHMENT_STATUS == "Closed")
+unique(closed$ESTABLISHMENT_NAME)
+head(sort(table(closed$ESTABLISHMENTTY), decreasing = TRUE))
+```
+Just having a look at the list there appears to be a lot of asian themed food palces that did get the final ax. This will show up more in the final analysis on the maps. 
+
+
+
+#Merging the geocoded data with the old dataset
+Finally got through the geocoded and continued on to merge the datasets together and than save it to dine_merge, which is what you saw above. 
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+geocoded <- readRDS("geocoded_final.rds")
+temp_geo <- data.frame(geocoded$input_address, geocoded$lat, geocoded$long)
+merged <- merge(x=dine, y=temp_geo, 
+                by.x = 'ESTABLISHMENT_ADDRESS', by.y= 'geocoded.input_address', 
+                incomparables = NA)
+#saveRDS(merged, 'dine_merge.rds')
+
+```
+
+
+#Clustering 
+I decided to give clustering a try to see if it could highlight where in the city were repeat offenders 
+
+This part, sets up the clustering algorithm 
+
+I used two different alogrithms because I found K clustering worked better for "closed" and dbscan worked well for "conditional pass"
+```{r, message=FALSE, warning=FALSE, inclde=FALSE}
+
+#For Closed Restaurants 
+closed <- subset(dine, dine$ESTABLISHMENT_STATUS == "Closed")
+closed <- cbind(unique(closed$geocoded.lat), unique(closed$geocoded.long))
+kluster <- kmeans(closed, 11)
+closed <- data.frame(closed)
+closed$ki <- kluster$cluster
+
+#creating the point size
+closed_size <- data.frame(kluster$centers)
+closed_size$n <- kluster$size
+
+#For Conditional Pass
+cp <- subset(dine, dine$ESTABLISHMENT_STATUS == "Conditional Pass")
+cp <- cbind(unique(cp$geocoded.lat), unique(cp$geocoded.long))
+kluster_mean <- kluster <- kmeans(cp, 60)
+kluster2 <- dbscan(cp, eps=0.001)
+cp <- data.frame(cp)
+cp$ki <- as.factor(kluster2$cluster)
+
+  #For the second part of CP. WIth different point sizes
+cp_size <- data.frame(kluster_mean$centers)
+cp_size$n <- kluster_mean$size
+
+
+```
+
+#Putting the Cluster on a map for Closed Restaurants 
+This are the maps I put together for closed restaurants. 
+
+They are of the city of Toronto. The different shapes just show different clusters and have not categorical meaning
+
+The second set of maps have dot sized counts of cluster centers. 
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+#For Closed Restaurants 
+#Different Maps for different zoom levels 
+map11<- get_map(location = 'toronto, canada', zoom = 11, 
+                color = 'bw', scale = 1, maptype = "roadmap", crop = bb)
+map12<- get_map(location = 'toronto, canada', zoom = 12, 
+                color = 'bw', scale = 1, maptype = "roadmap", crop = bb)
+map13<- get_map(location = 'toronto, canada', zoom = 13, 
+                color = 'bw', scale = 1, maptype = "roadmap", crop = bb)
+map14<- get_map(location = 'toronto, canada', zoom = 14, 
+                color = 'bw', scale = 1, maptype = "roadmap", crop = bb)
+#Map for Scarabourogh
+mapsc<- get_map(location = 'scaraborogh, canada', zoom = 13, 
+                color = 'bw', scale = 1, maptype = "roadmap", crop = bb)
+mapny<- get_map(location = 'North York, canada', zoom = 13, 
+                color = 'bw', scale = 1, maptype = "roadmap", crop = bb)
+
+ggmap(map11, extent="device") +
+  geom_point(aes(x = X2, y = X1, shape = ki), 
+             data = closed, size = 3) + scale_shape_identity() +
+             ggtitle("Map zoomed in to 95% of points")
+
+ggmap(map13, extent="device") +
+  geom_point(aes(x = X2, y = X1, shape = ki), 
+             data = closed, size = 3) + scale_shape_identity() +
+             ggtitle("Map zoomed in to downtown Toronto")
+
+ggmap(mapsc, extent="device") +
+  geom_point(aes(x = X2, y = X1, shape = ki), 
+             data = closed, size = 3) + scale_shape_identity() +
+             ggtitle("Map zoomed in to Scarborough")
+
+ggmap(mapny, extent="device") +
+  geom_point(aes(x = X2, y = X1, shape = ki), 
+             data = closed, size = 3) + scale_shape_identity()
+             ggtitle("Map Zoomed in to North York")
+             
+             
+# These are the same maps but with dots for the different clusters 
+ggmap(map11, extent="device") +
+  geom_point(aes(x = X2, y = X1, size=n), 
+             data = closed_size) +
+             ggtitle("Map zoomed in to 95% of points")
+
+ggmap(map13, extent="device") +
+  geom_point(aes(x = X2, y = X1, size = n), 
+             data = closed_size)  +
+             ggtitle("Map zoomed in to downtown Toronto")
+
+ggmap(mapsc, extent="device") +
+  geom_point(aes(x = X2, y = X1, size = n), 
+             data = closed_size)  +
+             ggtitle("Map zoomed in to Scarborough")
+
+ggmap(mapny, extent="device") +
+  geom_point(aes(x = X2, y = X1, size = n), 
+             data = closed_size) + 
+             ggtitle("Map Zoomed in to North York")
+```
+This section Showed that the predominatly asian neighbourhoods have the clusters overtop of them. This again might suggest that there might be a communication problem.
+
+
+#Putting the Cluster on a map for Conditional Pass Restaurants 
+These are the maps I put together for Conditional Pass Restaurants.
+
+The different colours have no categorical meaning. They are just to highlight different clusters. 
+
+The second set of grpahs took the cluster centers and made dot sized maps
+
+```{r, message=FALSE, warning=FALSE,echo=FALSE}
+
+
+
+ggmap(map11, extent="device") +
+  geom_point(aes(x = X2, y = X1, color = ki), 
+             data = cp, size = 3, alpha=0.1)  +
+              theme(legend.position="none") +
+              ggtitle("Map Zoomed where 95% of points are shown")
+              
+
+ggmap(map13, extent="device") +
+  geom_point(aes(x = X2, y = X1, color=ki), 
+             data = cp, size = 3, alpha=0.4)  + 
+             theme(legend.position="none") +
+             ggtitle("Map ZOomed in to downtown Toronto")
+
+ggmap(mapsc, extent="device") + 
+  geom_point(aes(x = X2, y = X1, color = ki), 
+             data = cp, size = 4, alpha=0.5) + 
+             theme(legend.position="none") +
+             ggtitle("Map zoomed in to Scarborough")
+
+ggmap(mapny, extent="device") +
+  geom_point(aes(x = X2, y = X1, color = ki), 
+             data = cp, size = 4, alpha=0.5) + 
+             theme(legend.position="none") +
+             ggtitle("map zoomed in to North York")
+
+#this are the maps with different point sizes
+
+ggmap(map11, extent="device") +
+  geom_point(aes(x = X2, y = X1, size=n), 
+             data = cp_size, alpha=0.1) +
+              ggtitle("Map ZOomed where 95% of points are shown")
+              
+
+ggmap(map13, extent="device") +
+  geom_point(aes(x = X2, y = X1, size=n), 
+             data = cp_size, alpha=0.4)  +
+             ggtitle("Map ZOomed in to downtown Toronto")
+
+ggmap(mapsc, extent="device") + 
+  geom_point(aes(x = X2, y = X1, size=n), 
+             data = cp_size, alpha=0.5) + 
+             ggtitle("Map zoomed in to Scarborough")
+
+ggmap(mapny, extent="device") +
+  geom_point(aes(x = X2, y = X1, size=sqrt(n)), 
+             data = cp_size, alpha=0.5) + 
+             ggtitle("map zoomed in to North York")
+
+
+
+```
+The biggest points of CP map overtop of those closed. There are lots of points scattered around Dundas street. Notorisouly known for mom and pop shops and bloor street. It is interesting that there are no dots in the finacial district and only one by the waterfront. These places usually have high leases and attract an upper class client. 
+
+
+
+##Final Plots and Summarys 
+
+
+Plot 1
+In this graph you can see that about 6 to 8% off all inspections result in a conditional pass. This seems high. Toronto restaurants need to do better. 
+
+Closures on the other hand are very low. Less than .10% of restaurants.
+
+This seemed odd to me. I read an interview with a inspector and he mentioned he will do a lot before he issues a restaurant a close. From a previous graph the distribution of the different violoations were the same for closed and Conditional Pass. There was about a three violation difference between those that got closed and those that got a conditional pass. This maybe where the difference lies or it is in the frequency of conditional passes in a row.
+
+The only significant difference for closed restaruants is that they happen more often in the middle of summer and just before the holidays. 
+
+Note: the totals do not equal 100% because there were many with a blank status
+```{r}
+grid.arrange(p1,p2,p3, 
+             top = "What % of restaurants get a 
+             specific type of status by month")
+
+```
+
+
+Plot 2
+As mentioned above, this distribution is interesting because most of the data was in restaurants but restaurants are just above the average. The highest are Rest Homes which are old age homes. Old age homes do not appear in the closed data however. There is probably a reason for that as they would have to move everyone out of it. The second highest was mobile food prep, which also appeared high on the closed graph. 
+
+This provided a very interesting result. There is a mismanagemend of old age homes in the city of Toronto. 
+```{r}
+
+ggplot(aes(x=reorder(ESTABLISHMENTTYPE,-cp_p), y=cp_p),
+       data= subset(full_table, full_table$cp_p > 0)) +
+       geom_bar(stat="identity") +
+       theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +   
+       xlab("Establishment Type") +
+       ylab("% of category") +
+       ggtitle("Etablishment Type that got a Conditional Pass")
+```
+
+
+Plot 3
+
+I wanted to do a density map initially put it never looked good. Instead what I did was a clustering algorithm to highlight areas that were dens. I did this by increasing the size of the dots via cluster centers. From the data it is easy to see that the same areas that are give closed are also high in conditional pases.. These areas that have dots are normally thought of as cheaper areas to eat and drink, while areas like the finacial district do not have any dot. A lot of the data are areas of ethnic and specifically of Asian concentration. This might ential that there is a communication barrier of the rules to these establisments. 
+
+It does need to be noted that these areas have a high density of restaurants and to get a true feel the map should be tied to a proportion. This was too difficult for this small project and having lived in the city of Toronto. The major differences are moving from downtown to the suberbs which is why I have to different maps with two different settings. So they can show locational hubs of violation in restaurants. 
+
+There are no x,y labels as it is a map. 
+```{r}
+p3<-ggmap(map13, extent="device") +
+  geom_point(aes(x = X2, y = X1, size=n), 
+             data = cp_size, alpha=0.4)  +
+             ggtitle("Map Zoomed in to downtown Toronto")
+
+p4<-ggmap(mapsc, extent="device") + 
+  geom_point(aes(x = X2, y = X1, size=n), 
+             data = cp_size, alpha=0.5) + 
+             ggtitle("Map zoomed in to Scarborough")
+
+p5<-ggmap(map13, extent="device") +
+  geom_point(aes(x = X2, y = X1, size = n), 
+             data = closed_size)  +
+             ggtitle("Map zoomed in to downtown Toronto")
+
+p6<- ggmap(mapsc, extent="device") +
+  geom_point(aes(x = X2, y = X1, size = n), 
+             data = closed_size)  +
+             ggtitle("Map zoomed in to Scarborough")
+
+grid.arrange(p3,p4, p5, p6, 
+    top= "City of Toronto Conditional Pass/Closed violation maps")
+
+```
+
+
+#Reflection
+
+I may have taken a different project than other udacity students. I really wanted to do something local to where I live and something someone has not done before. I was a little pissed off when I found there was an interactive map by the city with the same data. However, they did not display the analysis that I did so it was not all for nothing.
+
+Some of the areas that had struggled with were in setting up the chain to format the data the way I needed to build the graphs. It took a fair bit of trial and error to get it the way I wanted it
+
+My major hurdles were with getting the data geocoded. The limit of 2500 pings to google really slowed me down and made it very confusing as to where I was in the process. I found that when I finished I had more data points than my original dataset and that a few hundred unique addresses were missing. To fix this I had to figure out what was missing make an array to get those geocoded, merge it with the dataset then delete identical entries. After all that I had the same length and same unique address values.
+
+My last major struggle, in which I put a white flag up was with making a density map. I could not get it to look good. I found fiddling with the point size and alpha produced a more informative map. I try
+
+
+
+The data could be enriched with more years of data and more information about what type of restaurant it is. All it says is restaurant in that category. 
+Having completed all this work I did find success in learning new things on my own without the help of udacity. This included how to use ggmaps, Kclustering and creating my own for loops in R.  I'm pretty happy with the maps I created and proud that I finally got it done.
+
+#A list of websites
+
+I'm sorry I totally forgot to make a list of places where I used information.
+
+I can tell you most of it was from stackoverflow and I learned about ggmaps from multiple blog posts about how to use it. There were so many I don't even know where to start in terms finding them again. One blog post helped me write the for loop to get the addresses geocoded. It was very helpful 
